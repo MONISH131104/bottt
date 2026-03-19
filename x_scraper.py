@@ -1,35 +1,23 @@
 """
-x_scraper.py - Fetches real tweets using X session cookies.
-Works on Render cloud (no browser needed).
-No Playwright required.
-
-Add to .env or Render environment variables:
-  X_AUTH_TOKEN=your_auth_token
-  X_CT0=your_ct0_value
-
-HOW TO GET COOKIES (2 min):
-  1. Open Chrome, go to x.com, log in
-  2. Press F12 -> Application -> Cookies -> https://x.com
-  3. Copy value of auth_token
-  4. Copy value of ct0
-  5. Paste into .env file or Render environment variables
+x_scraper.py - Fetches tweets using X session cookies.
+Works on Render cloud. No browser needed.
 """
-
+ 
 import os
 import json
 import time
 from datetime import datetime
 import requests
-
+ 
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
-
-CACHE_FILE    = "tweets_cache.json"
-CACHE_MAX_AGE = 25 * 60  # 25 minutes
-
+ 
+CACHE_FILE    = "/tmp/tweets_cache.json"  # use /tmp on Render
+CACHE_MAX_AGE = 25 * 60
+ 
 ACCOUNTS_TO_TRACK = [
     "GeoConfirmed", "IntelCrab", "UAWeapons", "OSINTtechnical",
     "WarMonitor3", "sentdefcon", "Conflicts", "RALee85",
@@ -37,16 +25,20 @@ ACCOUNTS_TO_TRACK = [
     "KremlinRussia_E", "MFA_China", "NATO",
     "Reuters", "spectatorindex", "AJEnglish", "BBCBreaking",
 ]
-
+ 
 BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I4xL1vDwAAA%3DBUW0XlbCqsNRxuClBXd1I4EpiJzGOWHnHSvWsMkfkGBnDfnqiG"
-
-
+ 
+ 
 class XClient:
     def __init__(self):
         self.auth_token = os.environ.get("X_AUTH_TOKEN", "").strip()
         self.ct0        = os.environ.get("X_CT0", "").strip()
         self.available  = bool(self.auth_token and self.ct0)
-        self.session    = requests.Session()
+ 
+        print(f"[X] Auth token present: {bool(self.auth_token)} (length: {len(self.auth_token)})")
+        print(f"[X] CT0 present: {bool(self.ct0)} (length: {len(self.ct0)})")
+ 
+        self.session = requests.Session()
         if self.available:
             self.session.headers.update({
                 "User-Agent":            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -61,25 +53,7 @@ class XClient:
             self.session.cookies.set("ct0",         self.ct0,        domain=".twitter.com")
             self.session.cookies.set("auth_token", self.auth_token, domain=".x.com")
             self.session.cookies.set("ct0",         self.ct0,        domain=".x.com")
-
-    def _get_user_id(self, handle):
-        url = "https://api.twitter.com/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName"
-        params = {
-            "variables": json.dumps({"screen_name": handle, "withSafetyModeUserFields": True}),
-            "features":  json.dumps({
-                "hidden_profile_likes_enabled": True,
-                "hidden_profile_subscriptions_enabled": True,
-                "responsive_web_graphql_exclude_directive_enabled": True,
-                "verified_phone_label_enabled": False,
-                "responsive_web_graphql_timeline_navigation_enabled": True,
-            })
-        }
-        try:
-            r = self.session.get(url, params=params, timeout=10)
-            return r.json().get("data", {}).get("user", {}).get("result", {}).get("rest_id")
-        except Exception:
-            return None
-
+ 
     def get_user_tweets(self, handle, count=6):
         if not self.available:
             return []
@@ -128,7 +102,28 @@ class XClient:
         except Exception as e:
             print(f"[X] Error @{handle}: {e}")
             return []
-
+ 
+    def _get_user_id(self, handle):
+        url = "https://api.twitter.com/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName"
+        params = {
+            "variables": json.dumps({"screen_name": handle, "withSafetyModeUserFields": True}),
+            "features":  json.dumps({
+                "hidden_profile_likes_enabled": True,
+                "hidden_profile_subscriptions_enabled": True,
+                "responsive_web_graphql_exclude_directive_enabled": True,
+                "verified_phone_label_enabled": False,
+                "responsive_web_graphql_timeline_navigation_enabled": True,
+            })
+        }
+        try:
+            r = self.session.get(url, params=params, timeout=10)
+            uid = r.json().get("data", {}).get("user", {}).get("result", {}).get("rest_id")
+            print(f"[X] User ID for @{handle}: {uid}")
+            return uid
+        except Exception as e:
+            print(f"[X] User ID error @{handle}: {e}")
+            return None
+ 
     def get_home_timeline(self, count=40):
         if not self.available:
             return []
@@ -156,6 +151,8 @@ class XClient:
             }
             r    = self.session.get(url, params=params, timeout=10)
             data = r.json()
+            print(f"[X] Home timeline response keys: {list(data.keys())}")
+ 
             tweets = []
             for inst in data.get("data", {}).get("home", {}).get("home_timeline_ux", {}).get("instructions", []):
                 for entry in inst.get("entries", []):
@@ -172,61 +169,76 @@ class XClient:
                             })
                     except Exception:
                         continue
+            print(f"[X] Home timeline tweets found: {len(tweets)}")
             return tweets
         except Exception as e:
             print(f"[X] Home timeline error: {e}")
             return []
-
-
+ 
+ 
 def cache_is_fresh():
     if not os.path.exists(CACHE_FILE):
         return False
     return (time.time() - os.path.getmtime(CACHE_FILE)) < CACHE_MAX_AGE
-
+ 
 def load_cache():
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
-
+ 
 def save_cache(tweets):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(tweets, f, ensure_ascii=False, indent=2)
     print(f"[X] Cached {len(tweets)} tweets")
-
-
+ 
+ 
 _client = None
-
+ 
 def get_tweets(force_refresh=False):
     global _client
     if _client is None:
         _client = XClient()
-
+ 
     if not _client.available:
-        print("[X] No X cookies - add X_AUTH_TOKEN and X_CT0 to environment")
+        print("[X] No cookies found in environment variables")
         return []
-
+ 
     if not force_refresh and cache_is_fresh():
         tweets = load_cache()
         print(f"[X] Cache hit - {len(tweets)} tweets")
         return tweets
-
+ 
     print("[X] Fetching fresh tweets via cookies...")
+ 
+    # Try home timeline first
     tweets = _client.get_home_timeline(count=50)
+ 
     if not tweets:
-        for handle in ACCOUNTS_TO_TRACK[:12]:
-            tweets.extend(_client.get_user_tweets(handle, count=5))
+        print("[X] Home timeline empty, trying per-account...")
+        for handle in ACCOUNTS_TO_TRACK[:10]:
+            t = _client.get_user_tweets(handle, count=5)
+            tweets.extend(t)
             time.sleep(0.5)
-
+ 
     if tweets:
         save_cache(tweets)
-        print(f"[X] Got {len(tweets)} tweets")
+        print(f"[X] Total: {len(tweets)} tweets")
     else:
-        print("[X] No tweets - cookies may have expired")
+        print("[X] No tweets fetched - cookies may be expired")
         if os.path.exists(CACHE_FILE):
+            print("[X] Using stale cache")
             return load_cache()
+ 
     return tweets
+ 
+def add_account(handle):
+    handle = handle.strip().lstrip("@")
+    if handle not in ACCOUNTS_TO_TRACK:
+        ACCOUNTS_TO_TRACK.append(handle)
+        return True
+    return False
 
 def add_account(handle):
     handle = handle.strip().lstrip("@")
