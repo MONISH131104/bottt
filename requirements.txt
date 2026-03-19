@@ -1,0 +1,7 @@
+feedparser
+requests
+groq
+schedule
+pytz
+python-dotenv
+playwright
